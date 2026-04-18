@@ -18,6 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
+| **Claude Code (ACP)** | `hermes model` (spawns `npx -y @zed-industries/claude-agent-acp`, billed to your Claude Pro/Max subscription) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -237,6 +238,34 @@ model:
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+
+**`claude-code-acp` — Claude Code ACP runner**. Routes reasoning through Anthropic's
+Claude Code CLI via the `@zed-industries/claude-agent-acp` adapter. Consumes your
+**Claude Pro** or **Claude Max** OAuth quota, not an API key. Full native hermes
+experience (skills, memory, 90+ tool registry, auto-skill-creation) is injected
+into the subprocess via a per-session sandbox + MCP sidecar — see the
+[Claude Code via ACP](../user-guide/features/claude-code-acp.md) feature guide.
+
+```bash
+hermes chat --provider claude-code-acp --model claude-opus-4-7
+# Requires `claude login` (subscription) and Node.js / `npx` on PATH
+```
+
+**Permanent config:**
+```yaml
+model:
+  provider: "claude-code-acp"
+  default: "claude-opus-4-7"
+  base_url: "acp://claude-code"
+  api_mode: "chat_completions"
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `HERMES_CLAUDE_CODE_ACP_COMMAND` | Override launcher path (default: `npx`) |
+| `CLAUDE_ACP_PATH` | Absolute path to a locally-installed adapter binary |
+| `HERMES_CLAUDE_CODE_ACP_ARGS` | Override launcher args (default: `-y @zed-industries/claude-agent-acp`) |
+| `CLAUDE_CODE_ACP_BASE_URL` | Override ACP marker URL (default: `acp://claude-code`) |
 
 ### First-Class Chinese AI Providers
 
@@ -1159,7 +1188,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `claude-code-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

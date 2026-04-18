@@ -75,6 +75,7 @@ _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot",
     "copilot-acp",
+    "claude-code-acp",
     "openai-codex",
 })
 
@@ -398,6 +399,13 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         stripped = _strip_matching_provider_prefix(name, provider)
         if stripped == name and name.startswith("openai/"):
             # openai-codex maps openai/gpt-5.4 -> gpt-5.4
+            return name.split("/", 1)[1]
+        if (
+            stripped == name
+            and provider == "claude-code-acp"
+            and name.startswith("anthropic/")
+        ):
+            # claude-code-acp speaks native Anthropic IDs — strip vendor prefix
             return name.split("/", 1)[1]
         return stripped
 

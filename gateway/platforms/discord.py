@@ -1071,8 +1071,15 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Discord message."""
+        """Edit a previously sent Discord message.
+
+        ``finalize`` is accepted to match the base-class contract but
+        has no effect — Discord's message edit has no lifecycle state
+        to close; an edit is just an edit.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:

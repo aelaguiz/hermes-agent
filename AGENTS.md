@@ -136,6 +136,21 @@ while api_call_count < self.max_iterations and self.iteration_budget.remaining >
 
 Messages follow OpenAI format: `{"role": "system/user/assistant/tool", ...}`. Reasoning content is stored in `assistant_msg["reasoning"]`.
 
+### External-process runners (Copilot ACP, Claude Code ACP)
+
+Two provider IDs — `copilot-acp` and `claude-code-acp` — spawn an adapter
+subprocess and speak ACP (JSON-RPC over stdio). They share
+`agent/_acp_client_base.py` (transport + fs/permission message handling)
+and expose an OpenAI-compatible `.chat.completions.create()` surface so
+`AIAgent` treats them like any other provider. Claude Code ACP goes
+further: it injects the full Hermes brain (`SOUL.md`, skills, memory, the
+90+ tool registry, hooks) into the subprocess via a per-session sandbox at
+`~/.hermes/runtime/claude-code/<session_id>/` plus MCP sidecars. Tool calls
+executed inside the subprocess come back as `response.hermes_tool_trace`
+and are reconstructed into a hermes-shape `messages_snapshot` for
+auto-skill-creation. Provider config table is
+`_EXTERNAL_PROCESS_LAUNCHERS` in `hermes_cli/auth.py`.
+
 ---
 
 ## CLI Architecture (cli.py)

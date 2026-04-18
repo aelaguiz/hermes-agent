@@ -825,9 +825,19 @@ class MatrixAdapter(BasePlatformAdapter):
 
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
-        """Edit an existing message (via m.replace)."""
+        """Edit an existing message (via m.replace).
+
+        ``finalize`` is accepted to match the base-class contract but
+        has no effect — Matrix's m.replace edit has no lifecycle
+        state; an edit is just an edit.
+        """
 
         formatted = self.format_message(content)
         msg_content: Dict[str, Any] = {

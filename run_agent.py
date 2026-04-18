@@ -585,6 +585,77 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _is_nonretryable_acp_error(
+    provider: Optional[str], error: BaseException
+) -> bool:
+    """Return True if *error* on *provider* must NOT trigger a retry.
+
+    ACP providers carry stateful session transcripts on disk
+    (``~/.claude/projects/<cwd-slug>/<session>.jsonl``). Retrying a
+    ``TimeoutError`` or :class:`agent._acp_client_base.AcpCancelled`
+    respawns the subprocess against a transcript with unclosed tool_use
+    blocks, which the Zed adapter replays with ``registerHooks=false`` —
+    producing the "No onPostToolUseHook found" cascade and burning a
+    second 900s ceiling on nothing useful. The retry is actively
+    destructive here; surface the error instead.
+    """
+    try:
+        from agent._acp_client_base import AcpCancelled as _AcpCancelled
+    except Exception:  # pragma: no cover - import guard
+        _AcpCancelled = ()  # type: ignore[assignment]
+    from hermes_cli.providers import is_acp_provider as _is_acp_provider
+    if not _is_acp_provider(provider):
+        return False
+    return isinstance(error, (TimeoutError, _AcpCancelled))
+
+
+def _compute_stale_call_timeout(
+    *,
+    provider: Optional[str],
+    base_url: Optional[str],
+    api_kwargs: dict,
+) -> float:
+    """Non-streaming-call stale-detector threshold.
+
+    Non-streaming calls return nothing until the full response is ready;
+    without a detector, a hung provider blocks for the full httpx timeout
+    (1800s default) with zero feedback. The detector kills the connection
+    early so the outer retry loop can apply richer recovery.
+
+    Three regimes:
+
+    * **ACP providers** (``claude-code-acp`` etc., or any ``acp://`` base
+      URL): bypass entirely. ACP streams liveness via callbacks and
+      enforces its own 900s per-request ceiling in
+      :class:`agent._acp_client_base._AcpClientBase`. Stacking a 300s
+      wall-clock cap on top is destructive — SIGTERM mid-tool-call leaves
+      Claude Code's on-disk transcript with unclosed tool_use blocks and
+      the retry replays them, producing the "No onPostToolUseHook found"
+      cascade (incident 2026-04-18).
+    * **Local endpoints** (localhost, RFC-1918, container DNS): bypass.
+      User controls both sides of the wire.
+    * **Remote HTTP providers**: scale the cap with estimated input token
+      count, because longer prompts take longer to prefill.
+
+    The env override ``HERMES_API_CALL_STALE_TIMEOUT`` is always honored.
+    Bypass only applies when the base (300s) is still at its default.
+    """
+    _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
+    _url = str(base_url or "")
+    from hermes_cli.providers import is_acp_provider as _is_acp_provider
+    _is_acp = _is_acp_provider(provider) or _url.lower().startswith("acp://")
+    if _stale_base == 300.0 and (
+        _is_acp or (_url and is_local_endpoint(_url))
+    ):
+        return float("inf")
+    _est_tokens = sum(len(str(v)) for v in (api_kwargs or {}).get("messages", [])) // 4
+    if _est_tokens > 100_000:
+        return max(_stale_base, 600.0)
+    if _est_tokens > 50_000:
+        return max(_stale_base, 450.0)
+    return _stale_base
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -782,11 +853,18 @@ class AIAgent:
         # surface.
         # When api_mode was explicitly provided, respect it — the user
         # knows what their endpoint supports (#10473).
+        # ACP providers route via a local subprocess, not HTTP — skip the
+        # Responses-API opt-in for them (is_acp_provider is registry-driven
+        # so new ACP providers pick this up automatically). The base_url
+        # `acp://` / `acp+tcp://` checks remain as a belt-and-braces fallback
+        # for cases where the provider id isn't set (e.g. ad-hoc invocations
+        # that only pass base_url).
+        from hermes_cli.providers import is_acp_provider as _is_acp_provider
         if (
             api_mode is None
             and self.api_mode == "chat_completions"
-            and self.provider != "copilot-acp"
-            and not str(self.base_url or "").lower().startswith("acp://copilot")
+            and not _is_acp_provider(self.provider)
+            and not str(self.base_url or "").lower().startswith("acp://")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
             and (
                 self._is_direct_openai_url()
@@ -1034,7 +1112,9 @@ class AIAgent:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
-                if self.provider == "copilot-acp":
+                # ACP providers need the subprocess command/args threaded
+                # through; non-ACP providers carry these fields as no-ops.
+                if _is_acp_provider(self.provider):
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
@@ -2481,16 +2561,35 @@ class AIAgent:
         def _run_review():
             import contextlib, os as _os
             review_agent = None
+            # Claude Code ACP costs the user OAuth quota — never recurse into
+            # it for background overhead. Prefer Anthropic direct, then
+            # OpenRouter, then skip (let the nudge fire again next cycle).
+            _review_provider = self.provider
+            _review_model = self.model
+            if self.provider == "claude-code-acp":
+                if _os.getenv("ANTHROPIC_API_KEY"):
+                    _review_provider = "anthropic"
+                elif _os.getenv("OPENROUTER_API_KEY"):
+                    _review_provider = "openrouter"
+                    # OpenRouter wants vendor-prefixed slugs.
+                    if _review_model and "/" not in _review_model:
+                        _review_model = f"anthropic/{_review_model}"
+                else:
+                    logger.info(
+                        "Skipping background review — claude-code-acp active "
+                        "and no Anthropic/OpenRouter fallback key configured."
+                    )
+                    return
             try:
                 with open(_os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
                     review_agent = AIAgent(
-                        model=self.model,
+                        model=_review_model,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
-                        provider=self.provider,
+                        provider=_review_provider,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
@@ -4668,6 +4767,33 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        if self.provider == "claude-code-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://claude-code"):
+            from agent.claude_code_acp_client import ClaudeCodeACPClient
+
+            cc_kwargs = dict(client_kwargs)
+            # Pipe the agent's live callbacks into the ACP client so tool events
+            # stream into the CLI/gateway UI as they happen.
+            cc_kwargs.setdefault("agent", self)
+            cc_kwargs.setdefault(
+                "stream_delta_callback", getattr(self, "stream_delta_callback", None)
+            )
+            cc_kwargs.setdefault(
+                "thinking_callback", getattr(self, "thinking_callback", None)
+            )
+            cc_kwargs.setdefault(
+                "tool_progress_callback", getattr(self, "tool_progress_callback", None)
+            )
+            hsid = getattr(self, "session_id", None) or getattr(self, "_session_id", None)
+            if hsid:
+                cc_kwargs.setdefault("hermes_session_id", str(hsid))
+            client = ClaudeCodeACPClient(**cc_kwargs)
+            logger.info(
+                "Claude Code ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         if self.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
             from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 
@@ -5425,23 +5551,12 @@ class AIAgent:
                     self._close_request_openai_client(request_client, reason="request_complete")
 
         # ── Stale-call timeout (mirrors streaming stale detector) ────────
-        # Non-streaming calls return nothing until the full response is
-        # ready.  Without this, a hung provider can block for the full
-        # httpx timeout (default 1800s) with zero feedback.  The stale
-        # detector kills the connection early so the main retry loop can
-        # apply richer recovery (credential rotation, provider fallback).
-        _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
         _base_url = getattr(self, "_base_url", None) or ""
-        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
-            _stale_timeout = float("inf")
-        else:
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
-                _stale_timeout = max(_stale_base, 600.0)
-            elif _est_tokens > 50_000:
-                _stale_timeout = max(_stale_base, 450.0)
-            else:
-                _stale_timeout = _stale_base
+        _stale_timeout = _compute_stale_call_timeout(
+            provider=getattr(self, "provider", None),
+            base_url=_base_url,
+            api_kwargs=api_kwargs,
+        )
 
         _call_start = time.time()
         self._touch_activity("waiting for non-streaming API response")
@@ -8747,6 +8862,12 @@ class AIAgent:
         # calls so that nudge logic accumulates correctly in CLI mode.
         self.iteration_budget = IterationBudget(self.max_iterations)
 
+        # Claude Code ACP delegates tool execution to its own loop. Each
+        # response carries a `hermes_tool_trace` with the calls it ran; we
+        # accumulate them per turn so auto-skill-creation can reconstruct a
+        # hermes-shape `messages_snapshot` from the trace.
+        self._claude_code_turn_trace: list = []
+
         # Log conversation turn start for debugging/observability
         _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
         _msg_preview = _msg_preview.replace("\n", " ")
@@ -9338,10 +9459,17 @@ class AIAgent:
                             self.thinking_callback("")
 
                     _use_streaming = True
+                    from hermes_cli.providers import is_acp_provider as _is_acp_provider
                     # Provider signaled "stream not supported" on a previous
                     # attempt — switch to non-streaming for the rest of this
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
+                        _use_streaming = False
+                    elif _is_acp_provider(self.provider):
+                        # ACP clients stream internally via callbacks and
+                        # return a SimpleNamespace, not an iterable chunk
+                        # stream — OpenAI-style `for chunk in stream` would
+                        # raise TypeError.
                         _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
@@ -9357,7 +9485,18 @@ class AIAgent:
                         )
                     else:
                         response = self._interruptible_api_call(api_kwargs)
-                    
+
+                    # Claude Code ACP runs tools inside its own loop; harvest
+                    # the trace so auto-skill-creation sees every call + result.
+                    _cc_trace = getattr(response, "hermes_tool_trace", None)
+                    if _cc_trace:
+                        self._claude_code_turn_trace.extend(_cc_trace)
+                        if (
+                            self._skill_nudge_interval > 0
+                            and "skill_manage" in self.valid_tool_names
+                        ):
+                            self._iters_since_skill += max(0, len(_cc_trace) - 1)
+
                     api_duration = time.time() - api_start_time
                     
                     # Stop thinking spinner silently -- the response box or tool
@@ -9916,6 +10055,21 @@ class AIAgent:
                         thinking_spinner = None
                     if self.thinking_callback:
                         self.thinking_callback("")
+
+                    # See :func:`_is_nonretryable_acp_error` for the full
+                    # rationale: ACP timeouts/cancellations on retry
+                    # corrupt the on-disk session transcript and trigger
+                    # the adapter's "No onPostToolUseHook found" cascade.
+                    if _is_nonretryable_acp_error(
+                        getattr(self, "provider", None), api_error
+                    ):
+                        logger.warning(
+                            "ACP provider %s hit %s; not retrying "
+                            "(would corrupt session state).",
+                            getattr(self, "provider", None),
+                            type(api_error).__name__,
+                        )
+                        raise
 
                     # -----------------------------------------------------------
                     # UnicodeEncodeError recovery.  Two common causes:
@@ -11796,13 +11950,35 @@ class AIAgent:
         # so it never competes with the user's task for model attention.
         if final_response and not interrupted and (_should_review_memory or _should_review_skills):
             try:
+                _snapshot = list(messages)
+                # Claude Code ACP: recover the internal tool calls from the
+                # trace so the synthesizer can see what actually happened.
+                if self._claude_code_turn_trace:
+                    try:
+                        from agent.claude_code_acp_client import (
+                            trace_to_messages_snapshot,
+                        )
+
+                        _trace_msgs = trace_to_messages_snapshot(
+                            self._claude_code_turn_trace
+                        )
+                        if _trace_msgs:
+                            # Insert the tool-call pairs right before the
+                            # final assistant answer so the sequence reads
+                            # naturally: user → tool_use/tool_result … →
+                            # assistant text.
+                            _snapshot = list(messages) + _trace_msgs
+                    except Exception:
+                        pass
                 self._spawn_background_review(
-                    messages_snapshot=list(messages),
+                    messages_snapshot=_snapshot,
                     review_memory=_should_review_memory,
                     review_skills=_should_review_skills,
                 )
             except Exception:
                 pass  # Background review is best-effort
+        # Release the per-turn trace so the next turn starts clean.
+        self._claude_code_turn_trace = []
 
         # Note: Memory provider on_session_end() + shutdown_all() are NOT
         # called here — run_conversation() is called once per user message in

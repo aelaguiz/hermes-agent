@@ -3350,6 +3350,69 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
 
 
+def test_claude_code_acp_trace_feeds_background_review():
+    """`hermes_tool_trace` from ACP turns augments the snapshot passed to the
+    background memory/skill review and bumps the skill-nudge counter."""
+    from agent.claude_code_acp_client import trace_to_messages_snapshot
+
+    trace = [
+        {
+            "id": "call-1",
+            "tool_call_id": "call-1",
+            "name": "read_file",
+            "raw_input": {"path": "/tmp/example.txt"},
+            "raw_output": "hello",
+        },
+        {
+            "id": "call-2",
+            "tool_call_id": "call-2",
+            "name": "bash",
+            "raw_input": {"command": "ls"},
+            "raw_output": "a b",
+        },
+    ]
+    rebuilt = trace_to_messages_snapshot(trace)
+    assert [m["role"] for m in rebuilt] == ["assistant", "tool", "assistant", "tool"]
+    assert rebuilt[0]["content"][0]["type"] == "tool_use"
+    assert rebuilt[0]["content"][0]["name"] == "read_file"
+    assert rebuilt[0]["content"][0]["input"] == {"path": "/tmp/example.txt"}
+    assert rebuilt[1]["tool_use_id"] == "call-1"
+    assert rebuilt[1]["content"] == "hello"
+    assert rebuilt[2]["content"][0]["name"] == "bash"
+
+
+def test_aiagent_uses_claude_code_acp_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.claude_code_acp_client.ClaudeCodeACPClient") as mock_acp_client,
+    ):
+        acp_client = MagicMock()
+        mock_acp_client.return_value = acp_client
+
+        agent = AIAgent(
+            api_key="claude-code-acp",
+            base_url="acp://claude-code",
+            provider="claude-code-acp",
+            acp_command="/usr/local/bin/npx",
+            acp_args=["-y", "@zed-industries/claude-agent-acp"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is acp_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_called_once()
+    kwargs = mock_acp_client.call_args.kwargs
+    assert kwargs["base_url"] == "acp://claude-code"
+    assert kwargs["api_key"] == "claude-code-acp"
+    assert kwargs["command"] == "/usr/local/bin/npx"
+    assert kwargs["args"] == ["-y", "@zed-industries/claude-agent-acp"]
+    assert kwargs["agent"] is agent
+
+
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
     agent._print_fn = lambda *_a, **_kw: None
     with patch.object(run_agent.sys.stdout, "isatty", return_value=False):

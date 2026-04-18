@@ -1501,6 +1501,8 @@ def select_provider_and_model(args=None):
         _model_flow_google_gemini_cli(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
+    elif selected_provider == "claude-code-acp":
+        _model_flow_claude_code_acp(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
@@ -3241,6 +3243,78 @@ def _model_flow_copilot_acp(config, current_model=""):
         )
         or selected
     )
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
+def _model_flow_claude_code_acp(config, current_model=""):
+    """Claude Code via ACP flow using `@zed-industries/claude-agent-acp`."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.config import load_config, save_config
+
+    del config
+
+    provider_id = "claude-code-acp"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = status.get("resolved_command") or status.get("command") or "npx"
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print("  Claude Code (ACP) delegates Hermes turns to Anthropic's Claude Code CLI")
+    print("  via `@zed-industries/claude-agent-acp`. Sign in with `claude login` first so")
+    print("  the subscription OAuth token is available to the adapter.")
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print(
+            "  Install Node.js + npx (for `npx -y @zed-industries/claude-agent-acp`) "
+            "or set HERMES_CLAUDE_CODE_ACP_COMMAND / CLAUDE_ACP_PATH."
+        )
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+
+    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    if model_list:
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+        )
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if not selected:
+        print("No change.")
+        return
+
     _save_model_choice(selected)
 
     cfg = load_config()
@@ -6416,6 +6490,7 @@ For more help on a command:
             "nous",
             "openai-codex",
             "copilot-acp",
+            "claude-code-acp",
             "copilot",
             "anthropic",
             "gemini",
@@ -7679,6 +7754,22 @@ Examples:
         help="Run Hermes as an MCP server (expose conversations to other agents)",
     )
     mcp_serve_p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging on stderr",
+    )
+
+    mcp_tools_p = mcp_sub.add_parser(
+        "tools-serve",
+        help="Expose the hermes tool registry as an MCP stdio server",
+    )
+    mcp_tools_p.add_argument(
+        "--validate",
+        action="store_true",
+        help="Print the registered tools and exit (no server is started).",
+    )
+    mcp_tools_p.add_argument(
         "-v",
         "--verbose",
         action="store_true",

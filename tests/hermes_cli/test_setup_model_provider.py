@@ -387,6 +387,28 @@ def test_setup_copilot_acp_uses_model_picker_and_saves_provider(tmp_path, monkey
     assert reloaded["model"]["provider"] == "copilot-acp"
 
 
+def test_setup_claude_code_acp_uses_model_picker_and_saves_provider(tmp_path, monkeypatch):
+    """Claude Code ACP provider saves correctly through delegation."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
+
+    config = load_config()
+
+    def fake_select():
+        _write_model_config("claude-code-acp", "acp://claude-code", "claude-opus-4-7")
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "claude-code-acp"
+    assert reloaded["model"]["base_url"] == "acp://claude-code"
+
+
 def test_setup_switch_custom_to_codex_clears_custom_endpoint_and_updates_config(
     tmp_path, monkeypatch
 ):

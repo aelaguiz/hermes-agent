@@ -1,7 +1,10 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import inspect
 import os
 from unittest.mock import patch
+
+import pytest
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -581,4 +584,62 @@ class TestTruncateMessageUtf16:
             assert fence_count % 2 == 0, (
                 f"Chunk {i} has unbalanced fences ({fence_count})"
             )
+
+
+# ---------------------------------------------------------------------------
+# TestEditMessageContract
+# ---------------------------------------------------------------------------
+
+
+def _concrete_adapter_classes():
+    """Import every concrete adapter subclass so it's discoverable below."""
+    from gateway.platforms.slack import SlackAdapter
+    from gateway.platforms.telegram import TelegramAdapter
+    from gateway.platforms.discord import DiscordAdapter
+    from gateway.platforms.mattermost import MattermostAdapter
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+    from gateway.platforms.feishu import FeishuAdapter
+    from gateway.platforms.matrix import MatrixAdapter
+    from gateway.platforms.dingtalk import DingTalkAdapter
+    return [
+        SlackAdapter,
+        TelegramAdapter,
+        DiscordAdapter,
+        MattermostAdapter,
+        WhatsAppAdapter,
+        FeishuAdapter,
+        MatrixAdapter,
+        DingTalkAdapter,
+    ]
+
+
+class TestEditMessageContract:
+    """Every concrete adapter's edit_message must accept the ``finalize`` kwarg.
+
+    The stream consumer (``gateway/stream_consumer.py``) calls
+    ``adapter.edit_message(..., finalize=<bool>)`` on every edit. If an
+    adapter override drops the kwarg-only parameter, every streaming edit
+    raises ``TypeError: got an unexpected keyword argument 'finalize'``,
+    the cursor never comes off, and the final response double-posts as a
+    new message. This regression bit Slack in prod (2026-04-18).
+    """
+
+    @pytest.mark.parametrize("adapter_cls", _concrete_adapter_classes())
+    def test_edit_message_accepts_finalize_kwarg(self, adapter_cls):
+        sig = inspect.signature(adapter_cls.edit_message)
+        assert "finalize" in sig.parameters, (
+            f"{adapter_cls.__name__}.edit_message is missing the "
+            f"`finalize` kwarg from the base-class contract. The stream "
+            f"consumer passes finalize=<bool> on every edit; without it, "
+            f"Slack-style double-posts recur."
+        )
+        param = sig.parameters["finalize"]
+        assert param.kind == inspect.Parameter.KEYWORD_ONLY, (
+            f"{adapter_cls.__name__}.edit_message `finalize` must be "
+            f"keyword-only (after a bare `*`), got kind={param.kind}."
+        )
+        assert param.default is False, (
+            f"{adapter_cls.__name__}.edit_message `finalize` must default "
+            f"to False, got {param.default!r}."
+        )
 

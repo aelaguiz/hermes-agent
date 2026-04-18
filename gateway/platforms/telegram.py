@@ -1081,8 +1081,15 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Telegram message."""
+        """Edit a previously sent Telegram message.
+
+        ``finalize`` is accepted to match the base-class contract but
+        has no effect — Telegram's editMessageText has no lifecycle
+        state; an edit is just an edit.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:

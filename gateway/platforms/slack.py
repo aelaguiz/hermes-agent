@@ -316,8 +316,15 @@ class SlackAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Slack message."""
+        """Edit a previously sent Slack message.
+
+        ``finalize`` is accepted to match the base-class contract but
+        has no effect — Slack's chat.update has no lifecycle state to
+        close; an edit is just an edit.
+        """
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:

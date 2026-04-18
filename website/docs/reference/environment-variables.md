@@ -27,6 +27,10 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `COPILOT_CLI_PATH` | Alias for `HERMES_COPILOT_ACP_COMMAND` |
 | `HERMES_COPILOT_ACP_ARGS` | Override Copilot ACP arguments (default: `--acp --stdio`) |
 | `COPILOT_ACP_BASE_URL` | Override Copilot ACP base URL |
+| `HERMES_CLAUDE_CODE_ACP_COMMAND` | Override Claude Code ACP launcher path (default: `npx`) |
+| `CLAUDE_ACP_PATH` | Alias for `HERMES_CLAUDE_CODE_ACP_COMMAND` — absolute path to a locally-installed adapter |
+| `HERMES_CLAUDE_CODE_ACP_ARGS` | Override Claude Code ACP arguments (default: `-y @zed-industries/claude-agent-acp`) |
+| `CLAUDE_CODE_ACP_BASE_URL` | Override Claude Code ACP base URL (default: `acp://claude-code`) |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |
 | `ZAI_API_KEY` | Alias for `GLM_API_KEY` |
 | `Z_AI_API_KEY` | Alias for `GLM_API_KEY` |

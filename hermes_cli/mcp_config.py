@@ -746,6 +746,15 @@ def mcp_command(args):
         run_mcp_server(verbose=getattr(args, "verbose", False))
         return
 
+    if action == "tools-serve":
+        from hermes_mcp.tools_server import main as tools_serve_main
+        argv: list[str] = []
+        if getattr(args, "validate", False):
+            argv.append("--validate")
+        if getattr(args, "verbose", False):
+            argv.append("--verbose")
+        raise SystemExit(tools_serve_main(argv))
+
     handlers = {
         "add": cmd_mcp_add,
         "remove": cmd_mcp_remove,
@@ -766,6 +775,7 @@ def mcp_command(args):
         cmd_mcp_list()
         print(color("  Commands:", Colors.CYAN))
         _info("hermes mcp serve                              Run as MCP server")
+        _info("hermes mcp tools-serve                        Expose hermes tools as MCP")
         _info("hermes mcp add <name> --url <endpoint>        Add an MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
         _info("hermes mcp add <name> --preset <preset>       Add from a known preset")

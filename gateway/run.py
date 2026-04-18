@@ -9049,6 +9049,10 @@ class GatewayRunner:
                     model, runtime_kwargs.get("provider"), (session_key or "")[:30],
                 )
             except Exception as exc:
+                logger.exception(
+                    "_resolve_session_agent_runtime failed for session=%s: %s",
+                    (session_key or "")[:30], exc,
+                )
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",
                     "messages": [],

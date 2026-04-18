@@ -655,8 +655,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent message via the WhatsApp bridge."""
+        """Edit a previously sent message via the WhatsApp bridge.
+
+        ``finalize`` is accepted to match the base-class contract but
+        has no effect — WhatsApp's edit has no lifecycle state; an
+        edit is just an edit.
+        """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         bridge_exit = await self._check_managed_bridge_exit()

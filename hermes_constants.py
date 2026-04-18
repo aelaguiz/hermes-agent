@@ -292,4 +292,7 @@ def apply_ipv4_preference(force: bool = False) -> None:
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 
+# Claude Code ACP adapter (npm package that wraps the Claude Agent SDK in ACP).
+DEFAULT_CLAUDE_CODE_ACP_PACKAGE = "@zed-industries/claude-agent-acp"
+
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"

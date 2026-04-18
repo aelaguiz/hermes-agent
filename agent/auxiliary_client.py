@@ -1372,6 +1372,12 @@ def _to_async_client(sync_client, model: str):
             return sync_client, model
     except ImportError:
         pass
+    try:
+        from agent.claude_code_acp_client import ClaudeCodeACPClient
+        if isinstance(sync_client, ClaudeCodeACPClient):
+            return sync_client, model
+    except ImportError:
+        pass
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -1727,6 +1733,34 @@ def resolve_provider_client(
             from agent.copilot_acp_client import CopilotACPClient
 
             client = CopilotACPClient(
+                api_key=api_key,
+                base_url=base_url,
+                command=command,
+                args=args,
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model) if async_mode
+                    else (client, final_model))
+        if provider == "claude-code-acp":
+            api_key = str(creds.get("api_key", "")).strip()
+            base_url = str(creds.get("base_url", "")).strip()
+            command = str(creds.get("command", "")).strip() or None
+            args = list(creds.get("args") or [])
+            if not final_model:
+                logger.warning(
+                    "resolve_provider_client: claude-code-acp requested but no model "
+                    "was provided or configured"
+                )
+                return None, None
+            if not api_key or not base_url:
+                logger.warning(
+                    "resolve_provider_client: claude-code-acp requested but external "
+                    "process credentials are incomplete"
+                )
+                return None, None
+            from agent.claude_code_acp_client import ClaudeCodeACPClient
+
+            client = ClaudeCodeACPClient(
                 api_key=api_key,
                 base_url=base_url,
                 command=command,

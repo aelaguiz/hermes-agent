@@ -29,6 +29,7 @@ class TestProviderRegistry:
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("claude-code-acp", "Claude Code (ACP)", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
@@ -102,6 +103,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["claude-code-acp"].inference_base_url == "acp://claude-code"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
@@ -133,6 +135,8 @@ PROVIDER_ENV_VARS = (
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
+    "HERMES_CLAUDE_CODE_ACP_COMMAND", "CLAUDE_ACP_PATH",
+    "HERMES_CLAUDE_CODE_ACP_ARGS", "CLAUDE_CODE_ACP_BASE_URL",
 )
 
 
@@ -211,6 +215,39 @@ class TestResolveProvider:
     def test_alias_github_copilot_acp(self):
         assert resolve_provider("github-copilot-acp") == "copilot-acp"
         assert resolve_provider("copilot-acp-agent") == "copilot-acp"
+
+    def test_alias_claude_code_acp(self):
+        assert resolve_provider("claude-acp") == "claude-code-acp"
+        assert resolve_provider("claude-code-cli") == "claude-code-acp"
+        assert resolve_provider("anthropic-claude-code") == "claude-code-acp"
+
+    @pytest.mark.parametrize(
+        "alias",
+        ["claude-acp", "claude-code-cli", "anthropic-claude-code"],
+    )
+    def test_claude_code_acp_aliases_flow_through_helpers(self, alias):
+        """Aliases must resolve identically across every downstream helper.
+
+        This guards against a class of silent breakage where one helper
+        resolves the alias but another uses the literal string, leaving
+        only the canonical name working.
+        """
+        from hermes_cli.providers import (
+            is_acp_provider,
+            normalize_provider,
+            get_provider,
+        )
+
+        # Canonicalization + ACP-capability detection must both pick up
+        # the alias — `is_acp_provider` is the registry-driven helper
+        # `run_agent.py` uses to branch on ACP vs. HTTP.
+        assert normalize_provider(alias) == "claude-code-acp"
+        assert is_acp_provider(alias) is True
+        # get_provider must return the same ProviderDef for every alias.
+        canonical_def = get_provider("claude-code-acp")
+        alias_def = get_provider(alias)
+        assert alias_def is not None
+        assert alias_def.id == canonical_def.id
 
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
@@ -335,6 +372,28 @@ class TestApiKeyProviderStatus:
         assert status["args"] == ["--acp", "--stdio", "--debug"]
         assert status["base_url"] == "acp://copilot"
 
+    def test_claude_code_acp_status_detects_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CLAUDE_CODE_ACP_ARGS", "-y @zed-industries/claude-agent-acp --verbose")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        status = get_external_process_provider_status("claude-code-acp")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["command"] == "npx"
+        assert status["resolved_command"] == "/usr/local/bin/npx"
+        assert status["args"] == ["-y", "@zed-industries/claude-agent-acp", "--verbose"]
+        assert status["base_url"] == "acp://claude-code"
+
+    def test_claude_code_acp_status_respects_explicit_command(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CLAUDE_CODE_ACP_COMMAND", "/opt/custom/claude-acp")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: command)
+
+        status = get_external_process_provider_status("claude-code-acp")
+
+        assert status["command"] == "/opt/custom/claude-acp"
+        assert status["configured"] is True
+
     def test_get_auth_status_dispatches_to_external_process(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
 
@@ -416,6 +475,22 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["base_url"] == "acp://copilot"
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
+        assert creds["source"] == "process"
+
+    def test_resolve_claude_code_acp_with_local_cli(self, monkeypatch):
+        monkeypatch.setenv(
+            "HERMES_CLAUDE_CODE_ACP_ARGS",
+            "-y @zed-industries/claude-agent-acp",
+        )
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        creds = resolve_external_process_provider_credentials("claude-code-acp")
+
+        assert creds["provider"] == "claude-code-acp"
+        assert creds["api_key"] == "claude-code-acp"
+        assert creds["base_url"] == "acp://claude-code"
+        assert creds["command"] == "/usr/local/bin/npx"
+        assert creds["args"] == ["-y", "@zed-industries/claude-agent-acp"]
         assert creds["source"] == "process"
 
     def test_resolve_kimi_with_key(self, monkeypatch):
@@ -593,6 +668,24 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
+
+    def test_runtime_claude_code_acp_uses_process_runtime(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+        monkeypatch.setenv(
+            "HERMES_CLAUDE_CODE_ACP_ARGS",
+            "-y @zed-industries/claude-agent-acp --verbose",
+        )
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="claude-code-acp")
+
+        assert result["provider"] == "claude-code-acp"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "claude-code-acp"
+        assert result["base_url"] == "acp://claude-code"
+        assert result["command"] == "/usr/local/bin/npx"
+        assert result["args"] == ["-y", "@zed-industries/claude-agent-acp", "--verbose"]
 
 
 # =============================================================================

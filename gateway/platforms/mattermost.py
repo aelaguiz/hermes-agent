@@ -304,9 +304,19 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
-        """Edit an existing post."""
+        """Edit an existing post.
+
+        ``finalize`` is accepted to match the base-class contract but
+        has no effect — Mattermost's posts/{id}/patch has no lifecycle
+        state; an edit is just an edit.
+        """
         formatted = self.format_message(content)
         data = await self._api_put(
             f"posts/{message_id}/patch",

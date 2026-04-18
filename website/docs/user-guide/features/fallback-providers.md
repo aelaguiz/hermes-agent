@@ -41,6 +41,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | OpenAI Codex | `openai-codex` | `hermes model` (ChatGPT OAuth) |
 | GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` |
 | GitHub Copilot ACP | `copilot-acp` | External process (editor integration) |
+| Claude Code (ACP) | `claude-code-acp` | External process — requires `claude login` + Node.js/npx |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` or Claude Code credentials |
 | z.ai / GLM | `zai` | `GLM_API_KEY` |
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |
