@@ -222,6 +222,35 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     return result
 
 
+def _resolve_cron_service_tier(cfg: dict, model: str) -> tuple[str | None, dict | None]:
+    """Resolve config-level Fast mode into the request overrides cron needs.
+
+    Gateway and CLI turns convert ``agent.service_tier: fast`` into a
+    provider-specific request override before constructing ``AIAgent``. Cron
+    constructs its own agent, so it must do the same conversion rather than
+    merely sharing the model and reasoning config.
+    """
+    raw = str((((cfg or {}).get("agent") or {}).get("service_tier") or "")).strip()
+    value = raw.lower()
+    if not value or value in {"normal", "default", "standard", "off", "none"}:
+        return None, None
+    if value not in {"fast", "priority", "on"}:
+        logger.warning("Unknown cron service_tier '%s', ignoring", raw)
+        return None, None
+
+    try:
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        request_overrides = resolve_fast_mode_overrides(str(model))
+    except Exception as exc:
+        logger.warning("Cron Fast mode resolution failed for model '%s': %s", model, exc)
+        return None, None
+    if not request_overrides:
+        logger.warning("Cron Fast mode is unsupported for model '%s'; using normal service", model)
+        return None, None
+    return "priority", request_overrides
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -4025,6 +4054,9 @@ def run_job(
         reasoning_config = resolve_reasoning_config(
             _cfg if isinstance(_cfg, dict) else {}, str(model)
         )
+        service_tier, request_overrides = _resolve_cron_service_tier(
+            _cfg if isinstance(_cfg, dict) else {}, str(model)
+        )
 
         # Provider/model-drift fail-closed guard (#44585).
         #
@@ -4134,6 +4166,8 @@ def run_job(
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
+            service_tier=service_tier,
+            request_overrides=request_overrides,
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
