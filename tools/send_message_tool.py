@@ -500,6 +500,29 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: native document/image upload support for standalone sends ---
+    # Cron deliveries often execute without a live gateway adapter, so relying on
+    # adapter-only MEDIA handling silently dropped PDFs. Upload media on the
+    # standalone Slack path as well so `MEDIA:/path/to/report.pdf` is honored.
+    if platform == Platform.SLACK and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            if is_last:
+                result = await _send_slack_with_media(
+                    pconfig.token,
+                    chat_id,
+                    chunk,
+                    media_files=media_files,
+                    thread_id=thread_id,
+                )
+            else:
+                result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-Telegram/Discord platforms ---
     if media_files and not message.strip():
         return {
@@ -907,7 +930,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, thread_id=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -921,6 +944,8 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = thread_id
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
@@ -928,6 +953,68 @@ async def _send_slack(token, chat_id, message):
                 return _error(f"Slack API error: {data.get('error', 'unknown')}")
     except Exception as e:
         return _error(f"Slack send failed: {e}")
+
+
+async def _send_slack_with_media(token, chat_id, message, media_files=None, thread_id=None):
+    """Send Slack text plus MEDIA attachments via files_upload_v2.
+
+    This mirrors the gateway Slack adapter's upload path for standalone sends
+    such as cron ticks, where no live adapter may be available.
+    """
+    media_files = media_files or []
+    valid_files = []
+    for media_path, _is_voice in media_files:
+        if os.path.exists(media_path):
+            valid_files.append(media_path)
+        else:
+            return _error(f"Slack media file not found: {media_path}")
+
+    if not valid_files:
+        return await _send_slack(token, chat_id, message, thread_id=thread_id)
+
+    try:
+        from slack_sdk.errors import SlackApiError
+        from slack_sdk.web.async_client import AsyncWebClient
+    except ImportError:
+        return _error("slack_sdk not installed. Run: pip install slack_sdk")
+
+    try:
+        client = AsyncWebClient(token=token)
+        if len(valid_files) == 1:
+            result = await client.files_upload_v2(
+                channel=chat_id,
+                file=valid_files[0],
+                filename=os.path.basename(valid_files[0]),
+                initial_comment=message or "",
+                thread_ts=thread_id,
+            )
+        else:
+            file_uploads = [
+                {"file": path, "filename": os.path.basename(path)}
+                for path in valid_files
+            ]
+            result = await client.files_upload_v2(
+                channel=chat_id,
+                file_uploads=file_uploads,
+                initial_comment=message or "",
+                thread_ts=thread_id,
+            )
+        return {
+            "success": True,
+            "platform": "slack",
+            "chat_id": chat_id,
+            "message_id": result.get("ts") or result.get("file", {}).get("timestamp"),
+            "files": [os.path.basename(path) for path in valid_files],
+        }
+    except SlackApiError as e:
+        err = None
+        try:
+            err = e.response.get("error")
+        except Exception:
+            pass
+        return _error(f"Slack file upload failed: {err or e}")
+    except Exception as e:
+        return _error(f"Slack file upload failed: {e}")
 
 
 async def _send_whatsapp(extra, chat_id, message):
